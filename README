@@ -1,0 +1,8 @@
+glibc NSS multipasswd 
+=====================
+
+Per-uid /etc/passwd.d/ files.
+
+To build: 
+ 
+   cargo build
