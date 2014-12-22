@@ -1,0 +1,9 @@
+[package]
+
+name = "nss-multipasswd"
+version = "0.0.1"
+authors = [ "Alexander Polakov <apolyakov@beget.ru>" ]
+
+[lib]
+name = "nss_rust"
+crate-type = [ "dylib" ]
