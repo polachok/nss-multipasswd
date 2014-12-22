@@ -96,7 +96,7 @@ impl PasswdFile {
 			gid: 		maybe!(v.next().and_then(|gid| from_str::<libc::uid_t>(*gid))),
 			gecos:		maybe!(v.next()).to_string(),
 			dir: 		maybe!(v.next()).to_string(),
-			shell: 		maybe!(v.next()).to_string(),
+			shell: 		maybe!(v.next()).trim_right().to_string(),
 		})
 	}
 }
