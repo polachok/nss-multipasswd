@@ -6,3 +6,13 @@ Per-uid /etc/passwd.d/ files.
 To build: 
  
    cargo build
+   
+
+To install:
+
+   If you don't already know how to do it, don't do it
+   
+
+Why is this useful?
+
+  You don't want users to know other users' names on a system with public ssh access.
