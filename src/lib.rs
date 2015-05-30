@@ -1,12 +1,18 @@
-#![feature(macro_rules)]
 extern crate libc;
 
 use std::ptr;
-use std::io::File;
-use std::io::fs;
-use std::io::BufferedReader;
-use std::c_str::CString;
+use std::str;
+use std::fs;
+use std::ffi::CStr;
+use std::fs::File;
+use std::io::BufReader;
+use std::io::BufRead;
+use std::io::Result;
+use std::ffi::CString;
+use std::path::Path;
+use std::path::PathBuf;
 use libc::funcs::posix88::unistd::getuid;
+use libc::{c_int,uid_t,c_char};
 
 #[allow(dead_code)]
 enum NssStatus {
@@ -18,7 +24,7 @@ enum NssStatus {
 }
 
 impl NssStatus {
-    fn to_c(&self) -> int {
+    fn to_c(&self) -> c_int {
         match *self {
             NssStatus::TryAgain => -2,
             NssStatus::Unavail  => -1,
@@ -29,7 +35,7 @@ impl NssStatus {
     }
 }
 
-#[deriving(Show)]
+#[derive(Debug)]
 struct Passwd {
     name: 		String,
     passwd: 	String,
@@ -65,13 +71,13 @@ impl Passwd {
 }
 
 struct PasswdFile {
-    buf: BufferedReader<File>,
+    buf: BufReader<File>,
 }
 
 impl PasswdFile {
-    fn new(path: &Path) -> Result<PasswdFile, std::io::IoError> {
+    fn new(path: &Path) -> Result<PasswdFile> {
         match File::open(path) {
-            Ok(file) => Ok(PasswdFile { buf: BufferedReader::new(file) }),
+            Ok(file) => Ok(PasswdFile { buf: BufReader::new(file) }),
             Err(e) => Err(e)
         }
     }
@@ -92,8 +98,8 @@ impl PasswdFile {
         Some(Passwd {
             name: 		maybe!(v.next()).to_string(),
             passwd: 	maybe!(v.next()).to_string(),
-            uid: 		maybe!(v.next().and_then(|uid| from_str::<libc::uid_t>(*uid))),
-            gid: 		maybe!(v.next().and_then(|gid| from_str::<libc::uid_t>(*gid))),
+            uid: 		maybe!(v.next().and_then(|uid| uid.parse::<libc::uid_t>().ok())),
+            gid: 		maybe!(v.next().and_then(|gid| gid.parse::<libc::gid_t>().ok())),
             gecos:		maybe!(v.next()).to_string(),
             dir: 		maybe!(v.next()).to_string(),
             shell: 		maybe!(v.next()).trim_right().to_string(),
@@ -101,15 +107,12 @@ impl PasswdFile {
     }
 }
 
-impl Iterator<Passwd> for PasswdFile {
+impl Iterator for PasswdFile {
+    type Item = Passwd;
+
     fn next(&mut self) -> Option<Passwd> {
-        self.buf.lines()
-                .next()
-                .and_then(|r|
-                    r.and_then(|line|
-                        Ok(PasswdFile::parse_line(line)
-                    )
-                ).unwrap_or(None))
+        let mut line = String::new();
+        self.buf.read_line(&mut line).and_then(|_| Ok(PasswdFile::parse_line(line))).unwrap_or(None)
     }
 }
 
@@ -124,46 +127,53 @@ impl CBuffer {
     }
 
     /* XXX: check free */
-    fn write<T>(&mut self, data: *const T, len: uint) -> *mut libc::c_char {
+    fn write<T>(&mut self, data: *const T, len: usize) -> *mut libc::c_char {
         let t = self.pos;
         unsafe {
-            ptr::copy_memory(self.pos, data as *const i8 , len);
-            self.pos = self.pos.offset(len as int);
+            ptr::copy(self.pos, data as *mut i8, len);
+            self.pos = self.pos.offset(len as isize);
             self.free -= len as libc::size_t;
         }
         t
     }
 
-    fn write_str<S: ToCStr>(&mut self, string: S) -> *mut libc::c_char {
-        let s = string.to_c_str();
-        self.write(s.as_ptr(), s.len() + 1)
+    fn write_str(&mut self, string: String) -> *mut libc::c_char {
+        let len = string.len();
+        let s = CString::new(string).unwrap();
+        self.write(s.as_ptr(), len + 1)
     }
 }
 
-unsafe fn get_passwd_files() -> Vec<Path> {
+unsafe fn get_passwd_files() -> Vec<PathBuf> {
+    let mut vec = Vec::new();
     match getuid() {
-        0   => fs::readdir(&Path::new("/etc/passwd.d")).unwrap_or(Vec::new()),
-        uid => vec![Path::new(format!("/etc/passwd.d/{}", uid))],
+        0 => for de in fs::read_dir("/etc/passwd.d").unwrap() {
+            if let Ok(entry) = de {
+                vec.push(entry.path());
+            }
+        },
+        uid => vec.push(PathBuf::from(format!("/etc/passwd.d/{}", uid))),
     }
+    vec
 }
 
 #[no_mangle]
-pub extern fn _nss_multipasswd_setpwent() -> int { NssStatus::Success.to_c() }
+pub extern fn _nss_multipasswd_setpwent() -> libc::c_int { NssStatus::Success.to_c() }
 
 #[no_mangle]
-pub extern fn _nss_multipasswd_endpwent() -> int { NssStatus::Success.to_c() }
+pub extern fn _nss_multipasswd_endpwent() -> libc::c_int { NssStatus::Success.to_c() }
 
 #[no_mangle]
-pub extern fn _nss_multipasswd_getpwent_r() -> int { NssStatus::Unavail.to_c() }
+pub extern fn _nss_multipasswd_getpwent_r() -> libc::c_int { NssStatus::Unavail.to_c() }
 
 #[no_mangle]
 pub unsafe extern "C" fn _nss_multipasswd_getpwuid_r(uid: libc::uid_t,
                                                      pwbuf: *mut CPasswd,
                                                      buf: *mut libc::c_char,
                                                      buflen: libc::size_t,
-                                                     errnop: *mut int) -> int {
-    for path in get_passwd_files().iter() {
-        if let Ok(mut file) = PasswdFile::new(path) {
+                                                     errnop: *mut libc::c_int) -> libc::c_int {
+    for path in get_passwd_files() {
+        if let Ok(mut file) = PasswdFile::new(path.as_path()) {
             if let Some(entry) = file.find(|entry| entry.uid == uid) {
                 entry.to_c_passwd(pwbuf, &mut CBuffer::new(buf, buflen));
                 return NssStatus::Success.to_c();
@@ -178,10 +188,11 @@ pub unsafe extern "C" fn _nss_multipasswd_getpwnam_r(name_: *const libc::c_char,
                                                      pwbuf: *mut CPasswd,
                                                      buf: *mut libc::c_char,
                                                      buflen: libc::size_t,
-                                                     errnop: *mut int) -> int {
-    if let Some(name) = CString::new(name_, false).as_str() {
-        for path in get_passwd_files().iter() {
-            if let Ok(mut file) = PasswdFile::new(path) {
+                                                     errnop: *mut libc::c_int) -> libc::c_int {
+    let s = CStr::from_ptr(name_);
+    if let Ok(name) = str::from_utf8(s.to_bytes()) {
+        for path in get_passwd_files() {
+            if let Ok(mut file) = PasswdFile::new(path.as_path()) {
                 if let Some(entry) = file.find(|entry| entry.name == name) {
                     entry.to_c_passwd(pwbuf, &mut CBuffer::new(buf, buflen));
                     return NssStatus::Success.to_c();

@@ -7,3 +7,6 @@ authors = [ "Alexander Polakov <apolyakov@beget.ru>" ]
 [lib]
 name = "nss_rust"
 crate-type = [ "dylib" ]
+
+[dependencies]
+libc = "0.1.*"
